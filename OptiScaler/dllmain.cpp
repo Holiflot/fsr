@@ -357,6 +357,8 @@ static void CheckWorkingMode()
     GetSystemDirectory(sysFolder, MAX_PATH);
     std::filesystem::path sysPath(sysFolder);
     std::filesystem::path pluginPath(Config::Instance()->PluginPath.value());
+    // Folder of this dll, used for *-original.dll so they are never searched in CWD or PATH
+    auto localDllPath = Util::DllPath().parent_path();
 
     for (size_t i = 0; i < lCaseFilename.size(); i++)
         lCaseFilename[i] = std::tolower(lCaseFilename[i]);
@@ -401,7 +403,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"version-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"version-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -456,7 +459,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"winmm-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"winmm-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -510,7 +514,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"wininet-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"wininet-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -564,7 +569,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"dbghelp-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"dbghelp-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -654,7 +660,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"winhttp-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"winhttp-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -708,7 +715,7 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"dxgi-original.dll", NULL, 0);
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"dxgi-original.dll").c_str(), NULL, 0);
 
                 if (originalModule != nullptr)
                 {
@@ -770,7 +777,8 @@ static void CheckWorkingMode()
                     break;
                 }
 
-                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"d3d12-original.dll", NULL, 0);
+                originalModule =
+                    NtdllProxy::LoadLibraryExW_Ldr((localDllPath / L"d3d12-original.dll").c_str(), NULL, 0);
                 if (originalModule != nullptr)
                 {
                     if (!_passThruMode)
@@ -1864,6 +1872,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Clean up path
         Config::Instance()->MainDllPath.set_volatile_value(
             std::filesystem::absolute(Config::Instance()->MainDllPath.value()));
+
+        // Resolve relative plugin path against the exe folder instead of the current working directory
+        if (Config::Instance()->PluginPath.has_value())
+        {
+            if (std::filesystem::path pluginPath(Config::Instance()->PluginPath.value()); pluginPath.is_relative())
+                Config::Instance()->PluginPath.set_volatile_value(Util::ExePath().parent_path() / pluginPath);
+        }
 
         // If path is not set or incorrect
         if (!Config::Instance()->PluginPath.has_value() ||

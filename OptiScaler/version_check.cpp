@@ -9,6 +9,7 @@
 
 #include <winhttp.h>
 
+#include <cctype>
 #include <charconv>
 #include <optional>
 #include <string_view>
@@ -87,6 +88,28 @@ int CompareVersions(const SemanticVersion& lhs, const SemanticVersion& rhs)
     if (lhs.patch != rhs.patch)
         return lhs.patch < rhs.patch ? -1 : 1;
     return 0;
+}
+
+bool IsTrustedReleaseUrl(std::string_view url)
+{
+    constexpr std::string_view prefix = "https://github.com/optiscaler/optiscaler/releases/";
+
+    if (url.size() <= prefix.size() || url.size() > 512)
+        return false;
+
+    for (size_t i = 0; i < url.size(); i++)
+    {
+        const auto c = static_cast<unsigned char>(url[i]);
+
+        // Printable ASCII only, no spaces or quotes that could be used to inject arguments
+        if (c <= 0x20 || c >= 0x7F || c == '"' || c == '\\')
+            return false;
+
+        if (i < prefix.size() && std::tolower(c) != prefix[i])
+            return false;
+    }
+
+    return true;
 }
 
 std::optional<LatestReleaseInfo> FetchLatestRelease()
@@ -212,6 +235,13 @@ std::optional<LatestReleaseInfo> FetchLatestRelease()
 
         if (info.tag.empty())
             return std::nullopt;
+
+        // The URL is later handed to ShellExecute by the menu, only accept the expected release page
+        if (!IsTrustedReleaseUrl(info.url))
+        {
+            LOG_WARN("Version check received an unexpected release URL, ignoring it");
+            info.url.clear();
+        }
 
         return info;
     }

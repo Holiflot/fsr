@@ -348,7 +348,7 @@ class Config
     };
 
     // Hotfixes
-    CustomOptional<bool> CheckForUpdate { true };
+    CustomOptional<bool> CheckForUpdate { false };
     CustomOptional<bool> DisableOverlays { false };
     CustomOptional<bool> ManualInputPolling { false };
 

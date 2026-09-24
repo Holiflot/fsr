@@ -273,102 +273,14 @@ if "%enablingSpoofing%"=="2" (
     powershell -Command "(Get-Content '%configFile%') -replace 'Dxgi=auto', 'Dxgi=false' | Set-Content '%configFile%'"
 )
 
-REM Decide whether to run OptiPatcher
+REM OptiPatcher auto-download removed in this fork (security hardening):
+REM the upstream script downloaded OptiPatcher.asi from a mutable "rolling" release
+REM without any checksum or signature check and then enabled ASI (code) loading.
 echo.
-if "%gpuChoice%"=="1" (
-    echo AMD/Intel GPU detected - running OptiPatcher check.
-    goto checkExistingOptiPatcher
-)
-
-:checkExistingOptiPatcher
-set "foundOptiPatcher="
-for %%F in (plugins\*OptiPatcher*.asi) do (
-    set "foundOptiPatcher=%%F"
-)
-
-if defined foundOptiPatcher (
-    echo.
-    echo OptiPatcher found: !foundOptiPatcher!
-    echo If the existing version works properly, might be best to keep it.
-	echo Do you want to re-download a possibly newer version?
-	echo.
-    echo [1] Yes
-    echo [2] No
-    echo.
-	set /p optiRedownload="Waiting - "
-        
-    if /i "!optiRedownload!"=="1" (
-        echo.
-        echo Deleting !foundOptiPatcher!...
-        del "!foundOptiPatcher!"
-        goto checkOptiPatcher
-    ) else (
-        echo.
-        echo Keeping existing OptiPatcher - skipping download.
-        goto completeSetup
-    )
-)
-
-REM Not installed - continue to download
-goto checkOptiPatcher
-
-:checkOptiPatcher
-REM Check connectivity
-echo.
-echo Checking for OptiPatcher compatibility...
-echo Press Ctrl+C if this gets stuck to skip to setup completion.
-
-ping -n 1 -w 3000 github.com >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Offline or GitHub blocked. Skipping OptiPatcher check.
-    goto completeSetup
-)
-
-set "OPTI_MATCH=NO"
-for /f "usebackq tokens=*" %%A in (`powershell -Command "& { $rawUrl = 'https://raw.githubusercontent.com/optiscaler/OptiPatcher/main/OptiPatcher/dllmain.cpp'; try { $code = (Invoke-WebRequest -Uri $rawUrl -UseBasicParsing).Content } catch { return 'ERR' }; $supported = @(); $ueMatches = [Regex]::Matches($code, 'CHECK_UE\s*\(\s*([a-zA-Z0-9_]+)\s*\)'); foreach ($m in $ueMatches) { $base = $m.Groups[1].Value; $supported += ($base + '-win64-shipping.exe').ToLower(); $supported += ($base + '-wingdk-shipping.exe').ToLower(); }; $directMatches = [Regex]::Matches($code, 'exeName\s*==\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'); foreach ($m in $directMatches) { $supported += $m.Groups[1].Value.ToLower(); }; $localFiles = Get-ChildItem *.exe | Select-Object -ExpandProperty Name; foreach ($file in $localFiles) { if ($supported -contains $file.ToLower()) { Write-Output 'YES'; exit; } }; Write-Output 'NO'; }"`) do (
-    set "OPTI_MATCH=%%A"
-)
-
-if "!OPTI_MATCH!"=="YES" (
-    echo.
-    echo OptiPatcher support detected^^!
-    echo An Opti plugin used for unlocking DLSS/DLSS-FG inputs, avoiding spoofing and performance overhead in supported games.
-    echo More info available on OptiPatcher Github
-    echo.
-	echo Download OptiPatcher.asi?
-    echo.
-	echo [1] Yes
-    echo [2] No
-    echo.
-	set /p downloadOptiPatcher="Waiting - "
-    set downloadOptiPatcher=!downloadOptiPatcher: =!
-    
-    if "!downloadOptiPatcher!"=="1" (
-        echo.
-        echo Preparing plugins folder...
-        if not exist "plugins" mkdir "plugins"
-        
-        echo Downloading OptiPatcher...
-        echo Press Ctrl+C if this gets stuck to skip to setup completion.
-        echo.
-        powershell -Command "Invoke-WebRequest -Uri 'https://github.com/optiscaler/OptiPatcher/releases/download/rolling/OptiPatcher.asi' -OutFile 'plugins\OptiPatcher.asi'"
-        if errorlevel 1 goto completeSetup
-        
-        if exist "plugins\OptiPatcher.asi" (
-            echo OptiPatcher.asi downloaded successfully.
-            echo Enabling ASI loading in OptiScaler.ini...
-            if exist "%configFile%" (
-                powershell -Command "(Get-Content '%configFile%') -replace 'LoadAsiPlugins=auto', 'LoadAsiPlugins=true' | Set-Content '%configFile%'"
-                echo Successfully enabled ASI loading in OptiScaler.ini^^!
-            ) else (
-                echo Warning: OptiScaler.ini not found, could not enable LoadAsiPlugins.
-            )
-        ) else (
-            echo Failed to download OptiPatcher.asi.
-        )
-     timeout /t 3
-    )
-)
+echo NOTE: Automatic OptiPatcher download is disabled in this fork for security reasons.
+echo It is optional and not needed for FSR on AMD GPUs. If you really need it, download
+echo it manually from the official OptiPatcher GitHub releases, put it into the plugins
+echo folder and set LoadAsiPlugins=true in OptiScaler.ini yourself.
 echo.
 
 goto completeSetup

@@ -1,227 +1,120 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+# Builds OptiScaler from this repository's own (audited) source code.
+#
+# Security notes (see SECURITY_AUDIT.md):
+# - Least privilege: the job token can only read the repository.
+# - Every third party action is pinned to a full commit SHA, not a mutable tag.
+# - No secrets are used, nothing is published as a release automatically.
+# - Bundled third party DLLs (AMD FidelityFX, Intel XeSS, Microsoft Agility SDK)
+#   must carry a valid Authenticode signature from their vendor or the build fails.
+# - SHA256 checksums of every produced file are written to the job summary
+#   and shipped inside the package as SHA256SUMS.txt.
 
-name: Scheduled Build
+name: Build
 
 on:
-# schedule:
-#    - cron: '0 4 * * *' 
-
   workflow_dispatch:
-#  push:
-#    branches: [ "master" ]
-#  pull_request:
-#    branches: [ "master" ]
-    
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
-
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-  BUILD_CONFIGURATION: Release
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'images/**'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOLUTION_FILE_PATH: .
+  BUILD_CONFIGURATION: Release
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout (with pinned submodules)
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
-        fetch-depth: 0            
         submodules: 'true'
-        
-    - name: Check Existing Release
-      id: check_release
-      uses: actions/github-script@v8
-      with:
-        script: |
-          const releaseTag = "nightly";
-          try {
-            const release = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: releaseTag,
-            });
-            core.setOutput("release_exists", true);
-            core.setOutput("release_id", release.data.id);
-            core.setOutput("upload_url", release.data.upload_url);
-          } catch (error) {
-            if (error.status === 404) {
-              core.setOutput("release_exists", false);
-            } else {
-              throw error;
-            }
-          }
+        persist-credentials: false
 
-    - name: Create Nightly Release (if not exists)
-      id: create_release
-      if: steps.check_release.outputs.release_exists == 'false'
-      uses: actions/github-script@v8
-      with:
-        script: |
-          const release = await github.rest.repos.createRelease({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            tag_name: "nightly",
-            name: "Nightly Builds",
-            body: "This is an automated nightly build release.",
-            draft: false,
-            prerelease: true,
-          });
-          core.setOutput("release_id", release.data.id);
-          core.setOutput("upload_url", release.data.upload_url);
-       
-    - name: Extract OptiScaler Version
+    - name: Extract version
       id: get_version
-      working-directory: ${{ github.workspace }}
-      shell: powershell
+      shell: pwsh
       run: |
-        # Ensure the file exists before proceeding
         $resourceFile = ".\OptiScaler\resource.h"
-        if (-Not (Test-Path $resourceFile)) {
-            Write-Error "File not found: $resourceFile"
-            exit 1
+        function Get-Define([string]$name) {
+          $line = Get-Content $resourceFile | Select-String -Pattern "#define $name\s+" | Select-Object -First 1
+          if (-not $line) { throw "Pattern not found: $name" }
+          return ($line.Line -replace "#define $name\s+").Trim()
         }
-        
-        # Helper function to extract the first matching line for a version component
-        function Get-Version-Component {
-            param (
-                [string]$pattern,
-                [string]$replacement
-            )
-            # Use Select-String and take only the first match
-            $line = Get-Content $resourceFile | Select-String -Pattern $pattern | Select-Object -First 1
-            if ($line) {
-                return ($line.Line -replace $replacement).Trim()
-            } else {
-                Write-Error "Pattern not found: $pattern"
-                exit 1
-            }
-        }
-        
-        # Extract version components (only the first match for each pattern)
-        $majorVersion = Get-Version-Component 'VER_MAJOR_VERSION' '#define VER_MAJOR_VERSION\s+'
-        $minorVersion = Get-Version-Component 'VER_MINOR_VERSION' '#define VER_MINOR_VERSION\s+'
-        $hotfixVersion = Get-Version-Component 'VER_HOTFIX_VERSION' '#define VER_HOTFIX_VERSION\s+'
-        $buildVersion = Get-Version-Component 'VER_BUILD_NUMBER' '#define VER_BUILD_NUMBER\s+'
-        
-        # Merge into a single version string
-        $version = "v$majorVersion.$minorVersion.$hotfixVersion-pre$buildVersion"
-        
-        # Get the current date in a specific format (e.g., YYYYMMDD)
-        $date = Get-Date -Format "yyyyMMdd"
-        
-        # Construct the output filename with version and date
-        $outputFileName = "OptiScaler_${version}_${date}"
-        
-        # Output the generated filename
-        Write-Output "Generated Filename: $outputFileName"
-        
-        # Write outputs to GITHUB_OUTPUT
+        $version = "v$(Get-Define 'VER_MAJOR_VERSION').$(Get-Define 'VER_MINOR_VERSION').$(Get-Define 'VER_HOTFIX_VERSION')"
+        $sha = "${{ github.sha }}".Substring(0, 7)
+        $name = "OptiScaler_${version}_secure_${sha}"
         "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        "filename=$outputFileName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        
-      continue-on-error: false
-      
-    - name: Debug Outputs
-      run: |
-        echo "Version: ${{ steps.get_version.outputs.version }}"
-        echo "Filename: ${{ steps.get_version.outputs.filename }}"
-        
+        "filename=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        Write-Output "Package name: $name"
+
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
 
     - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} ${{env.SOLUTION_FILE_PATH}} /verbosity:minimal
-      
-    - name: Compress the artifact 
-      run: |
-        $zipName = "${{ steps.get_version.outputs.filename }}.7z"
-        7z a -r ${{ github.workspace }}\$zipName ${{ github.workspace }}\x64\Release\a\*.*
+      run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }} /verbosity:minimal
 
-      continue-on-error: false
-        
-    - uses: actions/upload-artifact@v7.0.0
+    - name: Verify signatures of bundled third party DLLs
+      shell: pwsh
+      run: |
+        $out = Join-Path $env:GITHUB_WORKSPACE "x64\Release\a"
+        $expected = @{
+          'amd_fidelityfx_*.dll' = 'Advanced Micro Devices'
+          'libxe*.dll'           = 'Intel Corporation'
+          'D3D12*.dll'           = 'Microsoft Corporation'
+        }
+        $failed = $false
+        foreach ($dll in Get-ChildItem -Path $out -Recurse -Filter *.dll) {
+          if ($dll.Name -ieq 'OptiScaler.dll') { continue }
+          $vendor = $null
+          foreach ($pattern in $expected.Keys) { if ($dll.Name -like $pattern) { $vendor = $expected[$pattern] } }
+          $sig = Get-AuthenticodeSignature -LiteralPath $dll.FullName
+          $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '<unsigned>' }
+          if (-not $vendor) {
+            Write-Output "::error::Unexpected DLL in package: $($dll.Name) ($subject)"
+            $failed = $true
+          } elseif ($sig.Status -ne 'Valid' -or $subject -notmatch [regex]::Escape($vendor)) {
+            Write-Output "::error::Bad signature for $($dll.Name): status=$($sig.Status) signer=$subject"
+            $failed = $true
+          } else {
+            Write-Output "OK  $($dll.Name)  [$subject]"
+          }
+        }
+        if ($failed) { exit 1 }
+
+    - name: Checksums and package
+      shell: pwsh
+      run: |
+        $out = Join-Path $env:GITHUB_WORKSPACE "x64\Release\a"
+        $sums = Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
+          $rel = $_.FullName.Substring($out.Length + 1)
+          "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLower())  $rel"
+        }
+        $sums | Set-Content -Encoding ascii (Join-Path $out "SHA256SUMS.txt")
+        "### SHA256 (package contents)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        $sums | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        $zip = Join-Path $env:GITHUB_WORKSPACE "${{ steps.get_version.outputs.filename }}.zip"
+        Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip
+        $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+        "ZIP SHA256: ``$zipHash``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+    - name: Upload package
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
-        name: ${{ steps.get_version.outputs.filename }}
-        path: ${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z
-        compression-level: 0
+        name: '${{ steps.get_version.outputs.filename }}'
+        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.zip'
         archive: false
         if-no-files-found: error
-       
-    - name: Remove Previous Artifacts
-      if: steps.check_release.outputs.release_exists == 'true'
-      uses: actions/github-script@v8
-      with:
-        script: |
-          const releaseId = ${{ steps.check_release.outputs.release_id }};
-          const assets = await github.rest.repos.listReleaseAssets({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            release_id: releaseId,
-          });
-
-          for (const asset of assets.data) {
-            await github.rest.repos.deleteReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              asset_id: asset.id,
-            });
-            console.log(`Deleted asset: ${asset.name}`);
-          }
-
-    - name: Upload Artifact to Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: ${{ github.workspace }}/${{ steps.get_version.outputs.filename }}.7z
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-            
-    - name: Get Commit Messages From Last Day and Update the Release
-      id: commit_messages
-      working-directory: ${{ github.workspace }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      shell: powershell
-      run: |
-        Write-Output "Fetching commits from the last 24 hours..."
-
-        # Get commit messages excluding .yml file commits
-        $commits = git log --since="1 day ago" --pretty=format:"%h %s (%an)" --abbrev-commit --no-merges --first-parent
-        
-        $commits = $commits -split "`n"
-
-        # If no commits are found, cancel the workflow
-        if (-not $commits) {          
-          Write-Output "No relevant commits in the last 24 hours. Cancelling workflow."
-
-          $ReleaseTag = "nightly"
-          Write-Output "Updating existing release: $ReleaseTag"
-          gh release edit $ReleaseTag --notes "### Changes in the Last 24 Hours`n`nNo changes..."   
-        }
-        else {
-          # Join commits into a newline-separated string
-          $formattedCommits = $commits -join "`n"        
-          Write-Output "Commits: $formattedCommits`n"
-  
-          # Generate release notes
-          $releaseNotes = "### Changes in the Last 24 Hours`n`n$formattedCommits"
-          
-          $ReleaseTag = "nightly"
-          Write-Output "Updating existing release: $ReleaseTag"
-          gh release edit $ReleaseTag --notes "$ReleaseNotes"   
-        }
-        
-      continue-on-error: false
-        
+        retention-days: 30
