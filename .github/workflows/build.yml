@@ -1,0 +1,120 @@
+# Builds OptiScaler from this repository's own (audited) source code.
+#
+# Security notes (see SECURITY_AUDIT.md):
+# - Least privilege: the job token can only read the repository.
+# - Every third party action is pinned to a full commit SHA, not a mutable tag.
+# - No secrets are used, nothing is published as a release automatically.
+# - Bundled third party DLLs (AMD FidelityFX, Intel XeSS, Microsoft Agility SDK)
+#   must carry a valid Authenticode signature from their vendor or the build fails.
+# - SHA256 checksums of every produced file are written to the job summary
+#   and shipped inside the package as SHA256SUMS.txt.
+
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**.md'
+      - 'images/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOLUTION_FILE_PATH: .
+  BUILD_CONFIGURATION: Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout (with pinned submodules)
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        submodules: 'true'
+        persist-credentials: false
+
+    - name: Extract version
+      id: get_version
+      shell: pwsh
+      run: |
+        $resourceFile = ".\OptiScaler\resource.h"
+        function Get-Define([string]$name) {
+          $line = Get-Content $resourceFile | Select-String -Pattern "#define $name\s+" | Select-Object -First 1
+          if (-not $line) { throw "Pattern not found: $name" }
+          return ($line.Line -replace "#define $name\s+").Trim()
+        }
+        $version = "v$(Get-Define 'VER_MAJOR_VERSION').$(Get-Define 'VER_MINOR_VERSION').$(Get-Define 'VER_HOTFIX_VERSION')"
+        $sha = "${{ github.sha }}".Substring(0, 7)
+        $name = "OptiScaler_${version}_secure_${sha}"
+        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "filename=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        Write-Output "Package name: $name"
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+    - name: Build
+      run: msbuild /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} ${{ env.SOLUTION_FILE_PATH }} /verbosity:minimal
+
+    - name: Verify signatures of bundled third party DLLs
+      shell: pwsh
+      run: |
+        $out = Join-Path $env:GITHUB_WORKSPACE "x64\Release\a"
+        $expected = @{
+          'amd_fidelityfx_*.dll' = 'Advanced Micro Devices'
+          'libxe*.dll'           = 'Intel Corporation'
+          'D3D12*.dll'           = 'Microsoft Corporation'
+        }
+        $failed = $false
+        foreach ($dll in Get-ChildItem -Path $out -Recurse -Filter *.dll) {
+          if ($dll.Name -ieq 'OptiScaler.dll') { continue }
+          $vendor = $null
+          foreach ($pattern in $expected.Keys) { if ($dll.Name -like $pattern) { $vendor = $expected[$pattern] } }
+          $sig = Get-AuthenticodeSignature -LiteralPath $dll.FullName
+          $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '<unsigned>' }
+          if (-not $vendor) {
+            Write-Output "::error::Unexpected DLL in package: $($dll.Name) ($subject)"
+            $failed = $true
+          } elseif ($sig.Status -ne 'Valid' -or $subject -notmatch [regex]::Escape($vendor)) {
+            Write-Output "::error::Bad signature for $($dll.Name): status=$($sig.Status) signer=$subject"
+            $failed = $true
+          } else {
+            Write-Output "OK  $($dll.Name)  [$subject]"
+          }
+        }
+        if ($failed) { exit 1 }
+
+    - name: Checksums and package
+      shell: pwsh
+      run: |
+        $out = Join-Path $env:GITHUB_WORKSPACE "x64\Release\a"
+        $sums = Get-ChildItem -Path $out -Recurse -File | ForEach-Object {
+          $rel = $_.FullName.Substring($out.Length + 1)
+          "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLower())  $rel"
+        }
+        $sums | Set-Content -Encoding ascii (Join-Path $out "SHA256SUMS.txt")
+        "### SHA256 (package contents)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        $sums | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        $zip = Join-Path $env:GITHUB_WORKSPACE "${{ steps.get_version.outputs.filename }}.zip"
+        Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip
+        $zipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+        "ZIP SHA256: ``$zipHash``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+    - name: Upload package
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      with:
+        name: '${{ steps.get_version.outputs.filename }}'
+        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.zip'
+        archive: false
+        if-no-files-found: error
+        retention-days: 30
